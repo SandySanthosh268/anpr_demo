@@ -141,7 +141,7 @@ async def get_daily_counts(
                COUNT(*) AS total
         FROM anpr_events
         WHERE timestamp >= :since
-          AND (:camera IS NULL OR camera_name = :camera)
+          AND (CAST(:camera AS TEXT) IS NULL OR camera_name = CAST(:camera AS TEXT))
         GROUP BY day
         ORDER BY day
         """
@@ -166,7 +166,7 @@ async def get_hourly_counts(
                COUNT(*) AS total
         FROM anpr_events
         WHERE timestamp >= :day_start AND timestamp < :day_end
-          AND (:camera IS NULL OR camera_name = :camera)
+          AND (CAST(:camera AS TEXT) IS NULL OR camera_name = CAST(:camera AS TEXT))
         GROUP BY hour
         ORDER BY hour
         """
@@ -190,7 +190,7 @@ async def get_frequent_plates(
                MAX(timestamp) AS last_seen
         FROM anpr_events
         WHERE timestamp >= :since
-          AND (:camera IS NULL OR camera_name = :camera)
+          AND (CAST(:camera AS TEXT) IS NULL OR camera_name = CAST(:camera AS TEXT))
         GROUP BY plate_number
         ORDER BY total DESC
         LIMIT :limit

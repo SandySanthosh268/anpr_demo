@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import cv2
@@ -12,6 +13,8 @@ from loguru import logger
 from config import get_settings
 
 settings = get_settings()
+
+_STREAM_PREFIXES = ("rtsp://", "rtsps://", "rtmp://", "http://", "https://")
 
 
 @dataclass
@@ -33,10 +36,11 @@ class CameraStats:
 
 class RTSPCapture:
     """
-    Async RTSP stream ingestion with automatic reconnection.
+    Async video source ingestion.
 
-    Yields every Nth frame (controlled by frame_skip) so the detection
-    pipeline does not receive more frames than it can process.
+    Supports:
+    - RTSP / RTMP / HTTP streams  → reconnects on failure
+    - Local video files (mp4, avi, …) → loops back to start on end-of-file
     """
 
     def __init__(
@@ -52,35 +56,32 @@ class RTSPCapture:
         self.frame_skip = frame_skip
         self.reconnect_delay = reconnect_delay
         self.max_reconnect_attempts = max_reconnect_attempts
+        self.is_file = not any(rtsp_url.lower().startswith(p) for p in _STREAM_PREFIXES)
 
         self._cap: Optional[cv2.VideoCapture] = None
         self._stats = CameraStats()
         self._running = False
-
-    # ── Public API ────────────────────────────────────────────────────────────
 
     @property
     def stats(self) -> CameraStats:
         return self._stats
 
     async def stream_frames(self) -> AsyncGenerator[FrameResult, None]:
-        """Yields processed frames continuously until stopped."""
         self._running = True
         reconnect_attempts = 0
 
         while self._running:
             connected = await self._connect()
             if not connected:
+                if self.is_file:
+                    logger.error("File source not found: {path}", path=self.rtsp_url)
+                    break
                 reconnect_attempts += 1
                 if reconnect_attempts > self.max_reconnect_attempts:
-                    logger.error(
-                        "Camera {name} exceeded max reconnect attempts ({max}). Stopping.",
-                        name=self.camera_name,
-                        max=self.max_reconnect_attempts,
-                    )
+                    logger.error("Camera {name}: exceeded max reconnect attempts.", name=self.camera_name)
                     break
                 logger.warning(
-                    "Camera {name}: reconnect attempt {attempt}/{max} in {delay}s",
+                    "Camera {name}: reconnect {attempt}/{max} in {delay}s",
                     name=self.camera_name,
                     attempt=reconnect_attempts,
                     max=self.max_reconnect_attempts,
@@ -91,7 +92,8 @@ class RTSPCapture:
 
             reconnect_attempts = 0
             self._stats.is_connected = True
-            logger.info("Camera {name}: stream connected.", name=self.camera_name)
+            src_type = "file" if self.is_file else "stream"
+            logger.info("Camera {name}: {t} connected.", name=self.camera_name, t=src_type)
 
             async for frame_result in self._read_frames():
                 if not self._running:
@@ -99,20 +101,20 @@ class RTSPCapture:
                 yield frame_result
 
             self._stats.is_connected = False
-            if self._running:
-                logger.warning(
-                    "Camera {name}: stream lost, reconnecting...",
-                    name=self.camera_name,
-                )
-                self._release()
-                await asyncio.sleep(self.reconnect_delay)
+
+            if self.is_file:
+                logger.info("File {name}: reached end of file.", name=self.camera_name)
+                break  # don't loop — let the pipeline decide what to do next
+            else:
+                if self._running:
+                    logger.warning("Camera {name}: stream lost, reconnecting…", name=self.camera_name)
+                    self._release()
+                    await asyncio.sleep(self.reconnect_delay)
 
     def stop(self) -> None:
         self._running = False
         self._release()
-        logger.info("Camera {name}: capture stopped.", name=self.camera_name)
-
-    # ── Internal helpers ──────────────────────────────────────────────────────
+        logger.info("Camera {name}: stopped.", name=self.camera_name)
 
     async def _connect(self) -> bool:
         try:
@@ -125,17 +127,18 @@ class RTSPCapture:
             self._stats.reconnect_count += 1
             return True
         except Exception as exc:
-            logger.error("Camera {name}: connection error: {err}", name=self.camera_name, err=exc)
+            logger.error("Camera {name}: connect error: {err}", name=self.camera_name, err=exc)
             return False
 
     def _open_capture(self) -> Optional[cv2.VideoCapture]:
-        cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10_000)
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10_000)
-        if not cap.isOpened():
-            return None
-        return cap
+        if self.is_file:
+            cap = cv2.VideoCapture(self.rtsp_url)
+        else:
+            cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10_000)
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10_000)
+        return cap if cap.isOpened() else None
 
     async def _read_frames(self) -> AsyncGenerator[FrameResult, None]:
         frame_count = 0
@@ -144,36 +147,31 @@ class RTSPCapture:
         while self._running and self._cap is not None:
             ret, frame = await loop.run_in_executor(None, self._cap.read)
             if not ret or frame is None:
-                logger.warning("Camera {name}: frame read failed.", name=self.camera_name)
-                break
+                break  # stream lost or file ended
 
             self._stats.total_frames += 1
             self._stats.last_frame_time = time.time()
             frame_count += 1
 
             if frame_count % self.frame_skip != 0:
+                await asyncio.sleep(0)
                 continue
 
             self._stats.processed_frames += 1
-            preprocessed = self._preprocess(frame)
             yield FrameResult(
-                frame=preprocessed,
+                frame=self._preprocess(frame),
                 frame_number=self._stats.total_frames,
                 timestamp=self._stats.last_frame_time,
                 camera_name=self.camera_name,
             )
-
-            # Yield control to the event loop between frames
             await asyncio.sleep(0)
 
     @staticmethod
     def _preprocess(frame: np.ndarray) -> np.ndarray:
-        """Light preprocessing: resize to a standard width for consistent detection."""
         h, w = frame.shape[:2]
-        target_width = 1280
-        if w > target_width:
-            scale = target_width / w
-            frame = cv2.resize(frame, (target_width, int(h * scale)), interpolation=cv2.INTER_AREA)
+        if w > 1280:
+            scale = 1280 / w
+            frame = cv2.resize(frame, (1280, int(h * scale)), interpolation=cv2.INTER_AREA)
         return frame
 
     def _release(self) -> None:
@@ -183,10 +181,3 @@ class RTSPCapture:
             except Exception:
                 pass
             self._cap = None
-
-    def __repr__(self) -> str:
-        return (
-            f"RTSPCapture(camera={self.camera_name!r}, "
-            f"connected={self._stats.is_connected}, "
-            f"frames_processed={self._stats.processed_frames})"
-        )

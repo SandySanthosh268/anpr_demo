@@ -10,8 +10,16 @@ from pydantic import BaseModel, Field, field_validator
 
 class CameraRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    rtsp_url: str = Field(..., min_length=10)
+    rtsp_url: str = Field(..., min_length=7, description="rtsp://, rtmp://, or http:// URL")
     location: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("rtsp_url")
+    @classmethod
+    def validate_url_scheme(cls, v: str) -> str:
+        allowed = ("rtsp://", "rtsps://", "rtmp://", "http://", "https://")
+        if not any(v.lower().startswith(s) for s in allowed):
+            raise ValueError("URL must start with rtsp://, rtmp://, or http://")
+        return v
 
 
 class CameraResponse(BaseModel):

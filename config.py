@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # ── Camera ─────────────────────────────────────────────────
     rtsp_url: str = "rtsp://admin:password@192.168.1.100:554/stream1"
+    video_source: str = ""  # If set, used instead of rtsp_url at startup (local file path)
     camera_name: str = "Gate1"
     frame_skip: int = Field(default=5, ge=1, le=30)
     reconnect_delay: int = Field(default=5, ge=1)

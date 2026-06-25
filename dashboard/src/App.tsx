@@ -4,10 +4,12 @@ import { ThemeProvider } from '@mui/material/styles'
 import CssBaseline from '@mui/material/CssBaseline'
 import theme from './theme'
 import Layout from './components/Layout'
+import LiveView from './pages/LiveView'
 import Dashboard from './pages/Dashboard'
 import Search from './pages/Search'
 import Analytics from './pages/Analytics'
 import Snapshots from './pages/Snapshots'
+import Cameras from './pages/Cameras'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,10 +28,12 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route element={<Layout />}>
-              <Route index element={<Dashboard />} />
+              <Route index element={<LiveView />} />
+              <Route path="dashboard" element={<Dashboard />} />
               <Route path="search" element={<Search />} />
               <Route path="analytics" element={<Analytics />} />
               <Route path="snapshots" element={<Snapshots />} />
+              <Route path="cameras" element={<Cameras />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

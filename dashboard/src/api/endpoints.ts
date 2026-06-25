@@ -97,6 +97,50 @@ export const listCameras = async (): Promise<Camera[]> => {
   return data
 }
 
+export const uploadVideo = async (file: File): Promise<{ filename: string; path: string; url: string }> => {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await apiClient.post('/camera/upload-video', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data
+}
+
+export const setActiveCameraByName = async (name: string): Promise<void> => {
+  await apiClient.post('/camera/set-active', null, { params: { name } })
+}
+
+export const switchSource = async (url: string, name: string): Promise<void> => {
+  await apiClient.post('/camera/switch', null, { params: { url, name } })
+}
+
+export const getActiveSource = async (): Promise<{ name: string; url: string }> => {
+  const { data } = await apiClient.get('/camera/active-source')
+  return data
+}
+
+// ─── Pipeline control ─────────────────────────────────────────────────────────
+
+export interface PipelineStatus {
+  is_file_source: boolean
+  pipeline_active: boolean
+  name: string
+  url: string
+}
+
+export const getPipelineStatus = async (): Promise<PipelineStatus> => {
+  const { data } = await apiClient.get('/pipeline/status')
+  return data
+}
+
+export const playPipeline = async (): Promise<void> => {
+  await apiClient.post('/pipeline/play')
+}
+
+export const stopPipeline = async (): Promise<void> => {
+  await apiClient.post('/pipeline/stop')
+}
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 
 export const getHealth = async (): Promise<HealthStatus> => {

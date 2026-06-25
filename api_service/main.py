@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from api_service.routers import analytics, camera, plates, websocket
+from api_service.routers import analytics, camera, debug, pipeline_control, plates, stream, websocket
 from api_service.schemas import HealthResponse
 from api_service.ws_manager import ws_manager
 from config import get_settings
@@ -82,10 +82,19 @@ def create_app() -> FastAPI:
     app.include_router(plates.router)
     app.include_router(analytics.router)
     app.include_router(camera.router)
+    app.include_router(pipeline_control.router)
+    app.include_router(stream.router)
+    app.include_router(debug.router)
     app.include_router(websocket.router)
 
     # ── Static snapshots ──────────────────────────────────────────────────────
     app.mount("/snapshots", StaticFiles(directory=str(settings.snapshot_dir)), name="snapshots")
+
+    # ── Uploaded videos ───────────────────────────────────────────────────────
+    import pathlib as _pathlib
+    _videos_dir = _pathlib.Path("videos")
+    _videos_dir.mkdir(exist_ok=True)
+    app.mount("/videos", StaticFiles(directory=str(_videos_dir)), name="videos")
 
     # ── Health ────────────────────────────────────────────────────────────────
     @app.get("/health", response_model=HealthResponse, tags=["health"])

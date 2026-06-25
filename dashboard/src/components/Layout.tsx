@@ -11,64 +11,109 @@ import ListItemText from '@mui/material/ListItemText'
 import Toolbar from '@mui/material/Toolbar'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import Chip from '@mui/material/Chip'
 import MenuIcon from '@mui/icons-material/Menu'
+import MenuOpenIcon from '@mui/icons-material/MenuOpen'
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
 import DashboardIcon from '@mui/icons-material/Dashboard'
 import SearchIcon from '@mui/icons-material/Search'
 import BarChartIcon from '@mui/icons-material/BarChart'
 import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary'
 import DirectionsCarIcon from '@mui/icons-material/DirectionsCar'
+import VideocamIcon from '@mui/icons-material/Videocam'
+import LiveTvIcon from '@mui/icons-material/LiveTv'
 import { useHealth } from '@/hooks/useAnalytics'
-import Chip from '@mui/material/Chip'
 
 const DRAWER_WIDTH = 220
+const MINI_WIDTH = 60
 
 const NAV = [
-  { label: 'Dashboard', path: '/', Icon: DashboardIcon },
+  { label: 'Live View', path: '/', Icon: LiveTvIcon },
+  { label: 'Dashboard', path: '/dashboard', Icon: DashboardIcon },
   { label: 'Search', path: '/search', Icon: SearchIcon },
   { label: 'Analytics', path: '/analytics', Icon: BarChartIcon },
   { label: 'Snapshots', path: '/snapshots', Icon: PhotoLibraryIcon },
+  { label: 'Cameras', path: '/cameras', Icon: VideocamIcon },
 ]
 
 export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)   // desktop collapse state
   const navigate = useNavigate()
   const location = useLocation()
   const { data: health } = useHealth()
 
-  const drawer = (
-    <Box sx={{ mt: 1 }}>
-      <Box sx={{ px: 2, py: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
-        <DirectionsCarIcon sx={{ color: 'primary.main' }} />
-        <Typography variant="h6" sx={{ fontWeight: 700 }}>
-          ANPR
-        </Typography>
+  const drawerWidth = sidebarOpen ? DRAWER_WIDTH : MINI_WIDTH
+
+  const handleNavClick = (path: string) => {
+    navigate(path)
+    setMobileOpen(false)
+  }
+
+  const drawerContent = (mini = false) => (
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Logo row */}
+      <Box
+        sx={{
+          px: mini ? 0 : 2,
+          py: 1.5,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: mini ? 'center' : 'flex-start',
+          gap: 1,
+          minHeight: 56,
+        }}
+      >
+        <DirectionsCarIcon sx={{ color: 'primary.main', flexShrink: 0 }} />
+        {!mini && (
+          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+            ANPR
+          </Typography>
+        )}
       </Box>
-      <List dense>
+
+      {/* Nav items */}
+      <List dense sx={{ flex: 1 }}>
         {NAV.map(({ label, path, Icon }) => (
-          <ListItemButton
-            key={path}
-            selected={location.pathname === path}
-            onClick={() => { navigate(path); setMobileOpen(false) }}
-            sx={{
-              mx: 1,
-              borderRadius: 1,
-              mb: 0.5,
-              '&.Mui-selected': {
-                bgcolor: 'rgba(0,180,216,0.12)',
-                color: 'primary.main',
-                '& .MuiListItemIcon-root': { color: 'primary.main' },
-              },
-            }}
-          >
-            <ListItemIcon sx={{ minWidth: 36 }}>
-              <Icon fontSize="small" />
-            </ListItemIcon>
-            <ListItemText primary={label} primaryTypographyProps={{ fontSize: '0.9rem' }} />
-          </ListItemButton>
+          <Tooltip key={path} title={mini ? label : ''} placement="right" arrow>
+            <ListItemButton
+              selected={location.pathname === path}
+              onClick={() => handleNavClick(path)}
+              sx={{
+                mx: mini ? 0.5 : 1,
+                borderRadius: 1,
+                mb: 0.5,
+                justifyContent: mini ? 'center' : 'flex-start',
+                px: mini ? 1 : 2,
+                '&.Mui-selected': {
+                  bgcolor: 'rgba(0,180,216,0.12)',
+                  color: 'primary.main',
+                  '& .MuiListItemIcon-root': { color: 'primary.main' },
+                },
+              }}
+            >
+              <ListItemIcon
+                sx={{
+                  minWidth: mini ? 'unset' : 36,
+                  justifyContent: 'center',
+                }}
+              >
+                <Icon fontSize="small" />
+              </ListItemIcon>
+              {!mini && (
+                <ListItemText
+                  primary={label}
+                  primaryTypographyProps={{ fontSize: '0.9rem' }}
+                />
+              )}
+            </ListItemButton>
+          </Tooltip>
         ))}
       </List>
-      {health && (
-        <Box sx={{ px: 2, mt: 'auto', pt: 2 }}>
+
+      {/* Pipeline status */}
+      {health && !mini && (
+        <Box sx={{ px: 2, pb: 2 }}>
           <Chip
             size="small"
             label={health.pipeline_running ? 'Pipeline Running' : 'Pipeline Stopped'}
@@ -86,29 +131,43 @@ export default function Layout() {
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
+      {/* ── AppBar ──────────────────────────────────────────────────── */}
       <AppBar
         position="fixed"
         elevation={0}
         sx={{
-          width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
-          ml: { md: `${DRAWER_WIDTH}px` },
+          width: { md: `calc(100% - ${drawerWidth}px)` },
+          ml: { md: `${drawerWidth}px` },
           bgcolor: 'background.paper',
           borderBottom: '1px solid rgba(255,255,255,0.08)',
+          transition: 'width 0.2s, margin 0.2s',
         }}
       >
         <Toolbar>
+          {/* Mobile hamburger */}
           <IconButton
             edge="start"
-            sx={{ mr: 2, display: { md: 'none' } }}
+            sx={{ mr: 1, display: { md: 'none' } }}
             onClick={() => setMobileOpen(true)}
           >
             <MenuIcon />
           </IconButton>
+
+          {/* Desktop collapse toggle */}
+          <IconButton
+            edge="start"
+            sx={{ mr: 2, display: { xs: 'none', md: 'flex' } }}
+            onClick={() => setSidebarOpen((v) => !v)}
+          >
+            {sidebarOpen ? <MenuOpenIcon /> : <MenuIcon />}
+          </IconButton>
+
           <Typography variant="h6" sx={{ flex: 1, fontWeight: 600 }}>
             {NAV.find((n) => n.path === location.pathname)?.label ?? 'ANPR System'}
           </Typography>
+
           {health && (
-            <Tooltip title={`${health.ws_clients} WebSocket client(s)`}>
+            <Tooltip title={`${health.ws_clients} WebSocket client(s) connected`}>
               <Chip
                 size="small"
                 label={health.camera_connected ? 'Camera Online' : 'Camera Offline'}
@@ -123,44 +182,50 @@ export default function Layout() {
         </Toolbar>
       </AppBar>
 
-      {/* Mobile drawer */}
+      {/* ── Mobile drawer (temporary) ───────────────────────────────── */}
       <Drawer
         variant="temporary"
         open={mobileOpen}
         onClose={() => setMobileOpen(false)}
         ModalProps={{ keepMounted: true }}
-        sx={{ display: { xs: 'block', md: 'none' }, '& .MuiDrawer-paper': { width: DRAWER_WIDTH } }}
+        sx={{
+          display: { xs: 'block', md: 'none' },
+          '& .MuiDrawer-paper': { width: DRAWER_WIDTH },
+        }}
       >
-        {drawer}
+        {drawerContent(false)}
       </Drawer>
 
-      {/* Desktop drawer */}
+      {/* ── Desktop drawer (permanent, collapsible) ─────────────────── */}
       <Drawer
         variant="permanent"
         sx={{
           display: { xs: 'none', md: 'block' },
           '& .MuiDrawer-paper': {
-            width: DRAWER_WIDTH,
+            width: drawerWidth,
             boxSizing: 'border-box',
             bgcolor: 'background.paper',
             borderRight: '1px solid rgba(255,255,255,0.08)',
+            overflowX: 'hidden',
+            transition: 'width 0.2s',
           },
         }}
         open
       >
-        {drawer}
+        {drawerContent(!sidebarOpen)}
       </Drawer>
 
-      {/* Main content */}
+      {/* ── Main content ─────────────────────────────────────────────── */}
       <Box
         component="main"
         sx={{
           flexGrow: 1,
           p: 3,
-          width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
+          width: { md: `calc(100% - ${drawerWidth}px)` },
           mt: '64px',
           bgcolor: 'background.default',
           minHeight: 'calc(100vh - 64px)',
+          transition: 'width 0.2s',
         }}
       >
         <Outlet />

@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 from loguru import logger
 
+from api_service.frame_buffer import frame_buffer
+from api_service.source_manager import source_manager
 from camera_service.rtsp_capture import FrameResult, RTSPCapture
 from config import get_settings
 from database.crud import create_event, get_camera_by_name
@@ -54,8 +56,8 @@ class ANPRPipeline:
         self.broadcast_callback = broadcast_callback
 
         self._camera = RTSPCapture(
-            rtsp_url=settings.rtsp_url,
-            camera_name=settings.camera_name,
+            rtsp_url=source_manager.url,
+            camera_name=source_manager.name,
             frame_skip=settings.frame_skip,
             reconnect_delay=settings.reconnect_delay,
             max_reconnect_attempts=settings.max_reconnect_attempts,
@@ -79,16 +81,57 @@ class ANPRPipeline:
     # ── Public API ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Start the pipeline. Runs until stop() is called."""
+        """Start the pipeline. Runs until stop() is called, hot-swaps source on change."""
         self._running = True
-        logger.info("ANPR Pipeline starting for camera: {name}", name=settings.camera_name)
+        logger.info("ANPR Pipeline starting: {url}", url=source_manager.url)
 
-        async for event in self._process_stream():
-            if not self._running:
-                break
-            await self._persist_and_broadcast(event)
+        while self._running:
+            # File source: idle (no capture) until user presses Play
+            if source_manager.is_file_source and not source_manager.pipeline_active:
+                await asyncio.sleep(0.2)
+                if source_manager.take_restart():
+                    # Source was changed while paused — reinit camera for new source
+                    self._camera.stop()
+                    self._camera = self._make_camera()
+                continue
+
+            # Play pressed (or RTSP auto-start): recreate camera so file starts from frame 0
+            if source_manager.take_restart():
+                self._camera.stop()
+                self._camera = self._make_camera()
+                logger.info("Source active: {url}", url=source_manager.url)
+
+            async for event in self._process_stream():
+                if not self._running:
+                    break
+                if source_manager.take_restart():
+                    self._camera.stop()
+                    self._camera = self._make_camera()
+                    logger.info("Source switched to: {url}", url=source_manager.url)
+                    break
+                # File source stopped mid-stream by user — break out to idle loop
+                if source_manager.is_file_source and not source_manager.pipeline_active:
+                    self._camera.stop()
+                    self._camera = self._make_camera()
+                    logger.info("File source stopped by user.")
+                    break
+                await self._persist_and_broadcast(event)
+            else:
+                # Loop completed without a break → file reached end naturally
+                if self._running and source_manager.is_file_source and source_manager.pipeline_active:
+                    source_manager.stop()
+                    logger.info("File '{name}' playback finished.", name=source_manager.name)
 
         logger.info("ANPR Pipeline stopped.")
+
+    def _make_camera(self) -> RTSPCapture:
+        return RTSPCapture(
+            rtsp_url=source_manager.url,
+            camera_name=source_manager.name,
+            frame_skip=settings.frame_skip,
+            reconnect_delay=settings.reconnect_delay,
+            max_reconnect_attempts=settings.max_reconnect_attempts,
+        )
 
     def stop(self) -> None:
         self._running = False
@@ -113,8 +156,25 @@ class ANPRPipeline:
         events: List[PipelineEvent] = []
         detections: List[DetectionResult] = self._detector.detect(frame_result.frame)
 
-        for detection in detections:
+        # Run OCR on every detection first so we can overlay text on the stream
+        ocr_map: dict[int, Optional[OCRResult]] = {}
+        for i, detection in enumerate(detections):
             ocr_result: Optional[OCRResult] = self._ocr.extract(detection.plate_crop)
+            ocr_map[i] = ocr_result
+            if ocr_result:
+                logger.debug(
+                    "OCR raw={raw!r} conf={conf:.2f} yolo={yconf:.2f}",
+                    raw=ocr_result.text, conf=ocr_result.confidence,
+                    yconf=detection.confidence,
+                )
+            else:
+                logger.debug("OCR returned None for detection conf={c:.2f}", c=detection.confidence)
+
+        # Push annotated frame (bounding boxes + OCR text) to live stream
+        self._push_to_stream(frame_result.frame, detections, ocr_map)
+
+        for i, detection in enumerate(detections):
+            ocr_result = ocr_map[i]
             if ocr_result is None:
                 continue
 
@@ -123,10 +183,13 @@ class ANPRPipeline:
                 confidence=detection.confidence,
             )
             if not validation.is_valid:
-                logger.debug(
-                    "Plate rejected: {raw!r} → {plate!r}",
+                logger.info(
+                    "Plate rejected: raw={raw!r} → {plate!r} | yolo={yc:.2f} | ocr={oc:.2f} | pattern={p}",
                     raw=ocr_result.text,
                     plate=validation.plate_number,
+                    yc=detection.confidence,
+                    oc=ocr_result.confidence,
+                    p=validation.pattern_type,
                 )
                 continue
 
@@ -198,6 +261,44 @@ class ANPRPipeline:
                 await self.broadcast_callback(payload)
             except Exception as exc:
                 logger.warning("Broadcast failed: {err}", err=exc)
+
+    # ── Live stream helper ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _push_to_stream(
+        frame: np.ndarray,
+        detections: List[DetectionResult],
+        ocr_map: dict | None = None,
+    ) -> None:
+        """Annotate frame with detection boxes + OCR text and push to the buffer."""
+        try:
+            annotated = frame.copy()
+            for i, det in enumerate(detections):
+                x1, y1, x2, y2 = det.bbox
+                ocr = (ocr_map or {}).get(i)
+
+                # Box colour: green if OCR found text, yellow if not
+                color = (0, 230, 118) if ocr else (0, 200, 255)
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+
+                # Top label: OCR text + YOLO conf
+                ocr_text = ocr.text if ocr else "?"
+                label = f"{ocr_text}  {det.confidence:.0%}"
+
+                # Dark background behind text for readability
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+                ty = max(y1 - 10, th + 4)
+                cv2.rectangle(annotated, (x1, ty - th - 4), (x1 + tw + 4, ty + 2), (0, 0, 0), -1)
+                cv2.putText(
+                    annotated, label, (x1 + 2, ty),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2,
+                )
+
+            ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if ok:
+                frame_buffer.update(buf.tobytes())
+        except Exception:
+            pass  # never crash the pipeline over a stream update
 
     # ── Snapshot helper ────────────────────────────────────────────────────────
 
