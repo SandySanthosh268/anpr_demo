@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from api_service.routers import analytics, camera, debug, pipeline_control, plates, stream, websocket
+from api_service.routers import analytics, pipeline_control, plates, stream, websocket
 from api_service.schemas import HealthResponse
 from api_service.ws_manager import ws_manager
 from config import get_settings
@@ -26,26 +26,21 @@ _pipeline_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global _pipeline, _pipeline_task
 
-    # ── Startup ───────────────────────────────────────────────────────────────
     logger.info("Starting ANPR System (env={env})", env=settings.app_env)
 
-    # Create tables if they don't exist (Alembic handles production migrations)
     if settings.app_env == "development":
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables ensured.")
 
-    # Ensure snapshot directory exists
     settings.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-    # Start ANPR pipeline as a background task
     _pipeline = ANPRPipeline(broadcast_callback=ws_manager.broadcast)
     _pipeline_task = asyncio.create_task(_pipeline.run(), name="anpr_pipeline")
     logger.info("ANPR Pipeline task started.")
 
     yield
 
-    # ── Shutdown ──────────────────────────────────────────────────────────────
     logger.info("Shutting down ANPR System…")
     if _pipeline:
         _pipeline.stop()
@@ -62,14 +57,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
-        description="Production-ready Real-Time ANPR System for Indian number plates.",
+        description="Real-Time ANPR System for Indian number plates.",
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
     )
 
-    # ── CORS ──────────────────────────────────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -78,25 +72,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(plates.router)
     app.include_router(analytics.router)
-    app.include_router(camera.router)
     app.include_router(pipeline_control.router)
     app.include_router(stream.router)
-    app.include_router(debug.router)
     app.include_router(websocket.router)
 
-    # ── Static snapshots ──────────────────────────────────────────────────────
     app.mount("/snapshots", StaticFiles(directory=str(settings.snapshot_dir)), name="snapshots")
 
-    # ── Uploaded videos ───────────────────────────────────────────────────────
-    import pathlib as _pathlib
-    _videos_dir = _pathlib.Path("videos")
-    _videos_dir.mkdir(exist_ok=True)
-    app.mount("/videos", StaticFiles(directory=str(_videos_dir)), name="videos")
-
-    # ── Health ────────────────────────────────────────────────────────────────
     @app.get("/health", response_model=HealthResponse, tags=["health"])
     async def health_check() -> HealthResponse:
         global _pipeline, _pipeline_task

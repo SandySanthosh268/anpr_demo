@@ -3,11 +3,11 @@ import Grid from '@mui/material/Grid'
 import Paper from '@mui/material/Paper'
 import Typography from '@mui/material/Typography'
 import Box from '@mui/material/Box'
-import DirectionsCarIcon from '@mui/icons-material/DirectionsCar'
-import AccessTimeIcon from '@mui/icons-material/AccessTime'
-import RepeatIcon from '@mui/icons-material/Repeat'
-import CameraAltIcon from '@mui/icons-material/CameraAlt'
-import StatsCard from '@/components/StatsCard'
+// import DirectionsCarIcon from '@mui/icons-material/DirectionsCar'
+// import AccessTimeIcon from '@mui/icons-material/AccessTime'
+// import RepeatIcon from '@mui/icons-material/Repeat'
+// import CameraAltIcon from '@mui/icons-material/CameraAlt'
+// import StatsCard from '@/components/StatsCard'
 import LiveFeed from '@/components/LiveFeed'
 import PlateTable from '@/components/PlateTable'
 import { useWebSocket } from '@/hooks/useWebSocket'
@@ -19,7 +19,7 @@ export default function Dashboard() {
   const [pageSize, setPageSize] = useState(20)
 
   const { isConnected, liveEvents } = useWebSocket()
-  const { data: countData, isLoading: countLoading } = useTodayCount()
+  // const { data: countData, isLoading: countLoading } = useTodayCount()
   const { data: eventsData, isLoading: eventsLoading } = useLatestEvents(page, pageSize)
   const { data: frequent } = useFrequentPlates(1)
   const { data: hourly } = useHourlyCounts()
@@ -36,7 +36,7 @@ export default function Dashboard() {
         Live Overview
       </Typography>
 
-      {/* Stats row */}
+      {/* Stats row
       <Grid container spacing={2} sx={{ mb: 3 }}>
         <Grid item xs={12} sm={6} md={3}>
           <StatsCard
@@ -74,7 +74,7 @@ export default function Dashboard() {
             color={isConnected ? '#2ea043' : '#f85149'}
           />
         </Grid>
-      </Grid>
+      </Grid> */}
 
       {/* Live feed + table */}
       <Grid container spacing={2}>

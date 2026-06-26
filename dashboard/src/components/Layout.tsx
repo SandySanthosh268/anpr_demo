@@ -14,13 +14,8 @@ import Typography from '@mui/material/Typography'
 import Chip from '@mui/material/Chip'
 import MenuIcon from '@mui/icons-material/Menu'
 import MenuOpenIcon from '@mui/icons-material/MenuOpen'
-import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
 import DashboardIcon from '@mui/icons-material/Dashboard'
-import SearchIcon from '@mui/icons-material/Search'
-import BarChartIcon from '@mui/icons-material/BarChart'
-import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary'
 import DirectionsCarIcon from '@mui/icons-material/DirectionsCar'
-import VideocamIcon from '@mui/icons-material/Videocam'
 import LiveTvIcon from '@mui/icons-material/LiveTv'
 import { useHealth } from '@/hooks/useAnalytics'
 
@@ -28,12 +23,8 @@ const DRAWER_WIDTH = 220
 const MINI_WIDTH = 60
 
 const NAV = [
-  { label: 'Live View', path: '/', Icon: LiveTvIcon },
-  { label: 'Dashboard', path: '/dashboard', Icon: DashboardIcon },
-  { label: 'Search', path: '/search', Icon: SearchIcon },
-  { label: 'Analytics', path: '/analytics', Icon: BarChartIcon },
-  { label: 'Snapshots', path: '/snapshots', Icon: PhotoLibraryIcon },
-  { label: 'Cameras', path: '/cameras', Icon: VideocamIcon },
+  { label: 'Live View',  path: '/',          Icon: LiveTvIcon    },
+  { label: 'Dashboard',  path: '/dashboard', Icon: DashboardIcon },
 ]
 
 export default function Layout() {
@@ -136,11 +127,11 @@ export default function Layout() {
         position="fixed"
         elevation={0}
         sx={{
-          width: { md: `calc(100% - ${drawerWidth}px)` },
+          width: { xs: '100%', md: `calc(100% - ${drawerWidth}px)` },
           ml: { md: `${drawerWidth}px` },
           bgcolor: 'background.paper',
           borderBottom: '1px solid rgba(255,255,255,0.08)',
-          transition: 'width 0.2s, margin 0.2s',
+          transition: 'width 0.2s, margin-left 0.2s',
         }}
       >
         <Toolbar>
@@ -201,6 +192,9 @@ export default function Layout() {
         variant="permanent"
         sx={{
           display: { xs: 'none', md: 'block' },
+          width: { md: drawerWidth },   // root div width = flex spacer
+          flexShrink: 0,                // don't let flex compress the drawer
+          transition: 'width 0.2s',
           '& .MuiDrawer-paper': {
             width: drawerWidth,
             boxSizing: 'border-box',
@@ -220,12 +214,12 @@ export default function Layout() {
         component="main"
         sx={{
           flexGrow: 1,
+          minWidth: 0,          // prevents content from bleeding under the drawer
           p: 3,
-          width: { md: `calc(100% - ${drawerWidth}px)` },
           mt: '64px',
           bgcolor: 'background.default',
           minHeight: 'calc(100vh - 64px)',
-          transition: 'width 0.2s',
+          overflowX: 'hidden',
         }}
       >
         <Outlet />

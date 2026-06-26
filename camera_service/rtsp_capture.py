@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -134,8 +135,10 @@ class RTSPCapture:
         if self.is_file:
             cap = cv2.VideoCapture(self.rtsp_url)
         else:
+            # Force TCP transport to eliminate UDP packet-loss artifacts
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;2097152"
             cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
             cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10_000)
             cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10_000)
         return cap if cap.isOpened() else None

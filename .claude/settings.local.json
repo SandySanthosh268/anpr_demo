@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(rm /home/ubuntu/Documents/sandy_files/ANPR_web/dashboard/src/pages/Search.tsx \\\\ *)"
+    ],
+    "additionalDirectories": [
+      "/home/ubuntu/Documents/sandy_files/ANPR_web/dashboard/src/pages"
     ]
   }
 }
