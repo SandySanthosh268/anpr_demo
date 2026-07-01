@@ -226,7 +226,9 @@ class RTSPCapture:
 
     async def _read_file_frames(self) -> AsyncGenerator[FrameResult, None]:
         """
-        File: read every frame in sequence without skipping.
+        File: yield every Nth frame (controlled by FRAME_SKIP in .env).
+        All frames are read from disk so total_frames stays accurate,
+        but only every Nth is sent to the detection pipeline.
         """
         loop = asyncio.get_event_loop()
 
@@ -238,8 +240,12 @@ class RTSPCapture:
             self._stats.total_frames += 1
             ts = time.time()
             self._stats.last_frame_time = ts
-            self._stats.processed_frames += 1
 
+            if self._stats.total_frames % settings.frame_skip != 0:
+                await asyncio.sleep(0)
+                continue
+
+            self._stats.processed_frames += 1
             yield FrameResult(
                 frame=self._preprocess(frame),
                 frame_number=self._stats.total_frames,

@@ -12,27 +12,29 @@ from config import get_settings
 
 settings = get_settings()
 
+# Absolute path so it resolves regardless of working directory
+_BYTETRACK_CFG = str(Path(__file__).parent.parent / "bytetrack_plate.yaml")
+
 
 @dataclass
 class DetectionResult:
     bbox: List[int]               # [x1, y1, x2, y2] in pixels
-    confidence: float             # 0–1 float
-    plate_crop: np.ndarray        # Cropped plate image (BGR)
-    track_id: int = 0             # assigned by VehicleTracker in pipeline
-    vehicle_type: str = "unknown" # assigned by VehicleDetector in pipeline
+    confidence: float             # 0–1 YOLO detection score
+    plate_crop: np.ndarray        # enhanced plate crop (BGR)
+    track_id: int = 0             # assigned by ByteTrack inside detect()
+    vehicle_type: str = "unknown" # filled by pipeline after vehicle detection
 
 
 class PlateDetector:
     """
-    YOLOv8-based license plate detector.
+    YOLOv8 plate detector with integrated ByteTrack tracking.
 
-    Falls back to a YOLOv8n general-object model (pretrained on COCO) when the
-    custom plate model is not found, using class 0 (person) as a stand-in only
-    during development. In production, replace with a model trained on Indian
-    license plates (class 0 → license_plate).
+    Calls model.track(persist=True) so track_id is stable across frames —
+    the same physical plate keeps the same ID even if confidence fluctuates.
+    ByteTrack handles occlusion and brief disappearances internally.
     """
 
-    MODEL_FALLBACK_URL = "yolov8n.pt"  # downloaded automatically by ultralytics
+    MODEL_FALLBACK_URL = "yolov8n.pt"
 
     def __init__(
         self,
@@ -51,54 +53,71 @@ class PlateDetector:
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def detect(self, frame: np.ndarray) -> List[DetectionResult]:
-        """Return a list of detected plate regions from the given BGR frame."""
+        """Detect plates and return stable ByteTrack IDs in one call."""
         if self._model is None:
             return []
 
         try:
-            results = self._model.predict(
+            results = self._model.track(
                 source=frame,
                 conf=self.confidence,
                 iou=self.iou,
                 device=self.device,
+                tracker=_BYTETRACK_CFG,
+                persist=True,   # keep Kalman state between frames
                 verbose=False,
             )
         except Exception as exc:
-            logger.error("YOLO inference error: {err}", err=exc)
+            logger.error("YOLO track error: {err}", err=exc)
             return []
 
+        if not results or results[0].boxes is None:
+            return []
+
+        boxes = results[0].boxes
+        ids = boxes.id          # Tensor[N] or None on first frame / no confirmed tracks
+        h, w = frame.shape[:2]
         detections: List[DetectionResult] = []
-        for result in results:
-            if result.boxes is None:
+
+        for i in range(len(boxes)):
+            conf = float(boxes.conf[i])
+            x1, y1, x2, y2 = map(int, boxes.xyxy[i].tolist())
+            track_id = int(ids[i].item()) if ids is not None else 0
+
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            if x2 <= x1 or y2 <= y1:
                 continue
-            for box in result.boxes:
-                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-                conf = float(box.conf[0])
 
-                # Clip to frame bounds
-                h, w = frame.shape[:2]
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(w, x2), min(h, y2)
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
 
-                if x2 <= x1 or y2 <= y1:
-                    continue
+            detections.append(DetectionResult(
+                bbox=[x1, y1, x2, y2],
+                confidence=conf,
+                plate_crop=self._enhance_crop(crop),
+                track_id=track_id,
+            ))
 
-                crop = frame[y1:y2, x1:x2]
-                if crop.size == 0:
-                    continue
-
-                crop = self._enhance_crop(crop)
-                detections.append(
-                    DetectionResult(bbox=[x1, y1, x2, y2], confidence=conf, plate_crop=crop)
-                )
-
-        logger.debug(
-            "PlateDetector: {n} plate(s) detected.",
-            n=len(detections),
-        )
+        logger.debug("PlateDetector: {n} plate(s) | IDs: {ids}",
+                     n=len(detections), ids=[d.track_id for d in detections])
         return detections
 
-    # ── Internal helpers ───────────────────────────────────────────────────────
+    def reset_tracker(self) -> None:
+        """Reset ByteTrack state — call when video source changes."""
+        try:
+            if (self._model is not None
+                    and hasattr(self._model, "predictor")
+                    and self._model.predictor is not None
+                    and hasattr(self._model.predictor, "trackers")
+                    and self._model.predictor.trackers):
+                self._model.predictor.trackers[0].reset()
+                logger.info("ByteTrack state reset.")
+        except Exception as exc:
+            logger.warning("ByteTrack reset failed: {err}", err=exc)
+
+    # ── Internal ───────────────────────────────────────────────────────────────
 
     def _load_model(self) -> None:
         try:
@@ -114,22 +133,19 @@ class PlateDetector:
                 model_path = Path(self.MODEL_FALLBACK_URL)
 
             self._model = YOLO(str(model_path))
-            logger.info("PlateDetector loaded model: {path}", path=model_path)
+            logger.info("PlateDetector loaded: {path}", path=model_path)
         except ImportError:
-            logger.error("ultralytics package not installed. PlateDetector disabled.")
+            logger.error("ultralytics not installed. PlateDetector disabled.")
         except Exception as exc:
             logger.error("Failed to load YOLO model: {err}", err=exc)
 
     @staticmethod
     def _enhance_crop(crop: np.ndarray) -> np.ndarray:
-        """Apply contrast enhancement and denoising to improve OCR accuracy."""
-        # Upscale small crops
         h, w = crop.shape[:2]
         if w < 200:
             scale = 200 / w
-            crop = cv2.resize(crop, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
-
-        # Convert to grayscale, apply CLAHE, convert back to BGR for PaddleOCR
+            crop = cv2.resize(crop, (int(w * scale), int(h * scale)),
+                              interpolation=cv2.INTER_CUBIC)
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         gray = clahe.apply(gray)

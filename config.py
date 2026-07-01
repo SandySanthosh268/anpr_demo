@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # ── Validation ─────────────────────────────────────────────
     plate_confidence_min: float = Field(default=0.6, ge=0.0, le=1.0)
     duplicate_window_seconds: int = Field(default=30, ge=1)
+    plate_min_votes: int = Field(default=2, ge=1, le=20)          # agreeing OCR reads to lock a candidate
+    plate_min_ocr_quality: float = Field(default=0.20, ge=0.0, le=1.0)  # skip OCR below this crop quality
 
     # ── Snapshots ──────────────────────────────────────────────
     snapshot_dir: Path = Path("snapshots")

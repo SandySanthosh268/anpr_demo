@@ -1,0 +1,10 @@
+# ByteTrack config tuned for ANPR gate cameras (10-50 km/h vehicles)
+tracker_type: bytetrack
+track_high_thresh: 0.20   # MUST be < YOLO_CONFIDENCE (0.25) — ByteTrack uses strict >,
+                          # so detections at conf=0.25 only enter the high bucket when this is lower
+track_low_thresh: 0.10    # detections between 0.10–0.20 used in second-pass re-association
+new_track_thresh: 0.20    # minimum confidence to start a new track
+track_buffer: 50          # keep lost tracks alive 50 frames before dropping
+match_thresh: 0.3         # low IoU threshold — plate bbox grows fast as vehicle approaches,
+                          # so IoU between consecutive detections is naturally low even when correct
+fuse_score: True          # fuse detection score into tracking distance for better matching
