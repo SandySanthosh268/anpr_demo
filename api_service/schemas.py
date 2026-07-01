@@ -44,6 +44,9 @@ class ANPREventResponse(BaseModel):
     ocr_confidence: float
     image_path: Optional[str]
     raw_plate_text: Optional[str]
+    track_id: Optional[int]
+    vehicle_type: Optional[str]
+    best_plate_path: Optional[str]
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -100,6 +103,9 @@ class WSEvent(BaseModel):
     camera: str
     image_path: Optional[str] = None
     bbox: Optional[List[int]] = None
+    track_id: Optional[int] = None
+    vehicle_type: Optional[str] = None
+    best_plate_path: Optional[str] = None
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────

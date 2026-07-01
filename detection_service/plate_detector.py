@@ -15,9 +15,11 @@ settings = get_settings()
 
 @dataclass
 class DetectionResult:
-    bbox: List[int]          # [x1, y1, x2, y2] in pixels
-    confidence: float        # 0–1 float
-    plate_crop: np.ndarray   # Cropped plate image (BGR)
+    bbox: List[int]               # [x1, y1, x2, y2] in pixels
+    confidence: float             # 0–1 float
+    plate_crop: np.ndarray        # Cropped plate image (BGR)
+    track_id: int = 0             # assigned by VehicleTracker in pipeline
+    vehicle_type: str = "unknown" # assigned by VehicleDetector in pipeline
 
 
 class PlateDetector:

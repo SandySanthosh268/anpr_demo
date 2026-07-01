@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { WS_URL } from '@/api/client'
-import type { WSEventPayload } from '@/types'
+import type { ActiveTrack, WSEventPayload } from '@/types'
 
 interface UseWebSocketOptions {
   onEvent?: (event: WSEventPayload) => void
@@ -10,6 +10,7 @@ interface UseWebSocketOptions {
 export function useWebSocket({ onEvent, maxHistory = 50 }: UseWebSocketOptions = {}) {
   const [isConnected, setIsConnected] = useState(false)
   const [liveEvents, setLiveEvents] = useState<WSEventPayload[]>([])
+  const [activeTracks, setActiveTracks] = useState<ActiveTrack[]>([])
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | null>(null)
   const mountedRef = useRef(true)
@@ -33,7 +34,16 @@ export function useWebSocket({ onEvent, maxHistory = 50 }: UseWebSocketOptions =
         if (!mountedRef.current) return
         try {
           const payload: WSEventPayload = JSON.parse(msg.data)
+
           if (payload.type === 'heartbeat') return
+
+          if (payload.type === 'tracks_update') {
+            // Live view of what's currently on camera — replace the active list
+            setActiveTracks(payload.tracks ?? [])
+            return
+          }
+
+          // Normal plate detection event — prepend to history
           setLiveEvents((prev) => [payload, ...prev].slice(0, maxHistory))
           onEvent?.(payload)
         } catch {
@@ -45,7 +55,6 @@ export function useWebSocket({ onEvent, maxHistory = 50 }: UseWebSocketOptions =
         if (!mountedRef.current) return
         setIsConnected(false)
         wsRef.current = null
-        // Reconnect after 3 seconds
         reconnectTimer.current = window.setTimeout(connect, 3_000)
       }
 
@@ -69,5 +78,5 @@ export function useWebSocket({ onEvent, maxHistory = 50 }: UseWebSocketOptions =
     }
   }, [connect])
 
-  return { isConnected, liveEvents }
+  return { isConnected, liveEvents, activeTracks }
 }

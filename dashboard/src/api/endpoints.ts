@@ -1,6 +1,5 @@
 import { apiClient } from './client'
 import type {
-  DailyCount,
   EventCount,
   FrequentPlate,
   HealthStatus,

@@ -7,6 +7,9 @@ export interface ANPREvent {
   ocr_confidence: number
   image_path: string | null
   raw_plate_text: string | null
+  track_id: number | null
+  vehicle_type: string | null
+  best_plate_path: string | null
   created_at: string
 }
 
@@ -67,7 +70,7 @@ export interface HealthStatus {
 }
 
 export interface WSEventPayload {
-  type?: 'heartbeat'
+  type?: 'heartbeat' | 'tracks_update'
   plate?: string
   timestamp?: string
   confidence?: number
@@ -75,4 +78,16 @@ export interface WSEventPayload {
   camera?: string
   image_path?: string | null
   bbox?: number[] | null
+  track_id?: number | null
+  vehicle_type?: string | null
+  best_plate_path?: string | null
+  // present when type === 'tracks_update'
+  tracks?: ActiveTrack[]
+}
+
+export interface ActiveTrack {
+  track_id: number
+  plate: string
+  camera: string
+  timestamp: number
 }

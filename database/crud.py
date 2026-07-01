@@ -46,6 +46,9 @@ async def create_event(
     image_path: Optional[str] = None,
     raw_plate_text: Optional[str] = None,
     camera_id: Optional[int] = None,
+    track_id: Optional[int] = None,
+    vehicle_type: Optional[str] = None,
+    best_plate_path: Optional[str] = None,
 ) -> ANPREvent:
     event = ANPREvent(
         plate_number=plate_number,
@@ -56,6 +59,9 @@ async def create_event(
         image_path=image_path,
         raw_plate_text=raw_plate_text,
         camera_id=camera_id,
+        track_id=track_id,
+        vehicle_type=vehicle_type,
+        best_plate_path=best_plate_path,
     )
     db.add(event)
     await db.flush()

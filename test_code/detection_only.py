@@ -4,7 +4,7 @@ from ultralytics import YOLO
 # ── CONFIG — edit these ───────────────────────────────────────────────────────
 VIDEO_PATH     = "/home/ubuntu/Videos/anpr_videos/vid2.mp4"       # path to your video file
 MODEL_PATH     = "/home/ubuntu/Documents/sandy_files/plate_paddleOCR/model/number_plate_yolov8s_v2.pt"     # path to your YOLO weights
-FRAME_INTERVAL = 5                 # process every Nth frame
+FRAME_INTERVAL = 5               # process every Nth frame
 OUTPUT_PATH    = "output.avi"      # where to save result video
 CONF_THRESHOLD = 0.30               # minimum confidence to show bbox
 WINDOW_WIDTH   = 1280          # ← set your desired width
@@ -31,6 +31,7 @@ def detect_numbers_in_video():
     print(f"Video info    : {total_frames} frames | {fps:.1f} FPS | {width}x{height}")
     print(f"Frame interval: every {FRAME_INTERVAL}th frame")
     print("Controls      : [q] quit\n")
+    print(f"Input Video FPS: {fps}")
 
     out = cv2.VideoWriter(
         OUTPUT_PATH,

@@ -17,7 +17,11 @@ from camera_service.rtsp_capture import FrameResult, RTSPCapture
 from config import get_settings
 from database.crud import create_event, get_camera_by_name
 from database.session import AsyncSessionLocal
+from detection_service.best_plate_store import BestPlateStore
 from detection_service.plate_detector import DetectionResult, PlateDetector
+from detection_service.plate_quality import score_crop
+from detection_service.vehicle_detector import VehicleDetector
+from detection_service.vehicle_tracker import VehicleTracker
 from ocr_service.paddle_ocr import OCRResult, PaddleOCRService
 from validation_service.plate_validator import PlateValidator, ValidationResult
 
@@ -39,6 +43,9 @@ class PipelineEvent:
     image_path: Optional[str]
     bbox: List[int]
     raw_text: str
+    track_id: int = 0
+    vehicle_type: str = "unknown"
+    best_plate_path: Optional[str] = None
 
 
 class ANPRPipeline:
@@ -58,7 +65,6 @@ class ANPRPipeline:
         self._camera = RTSPCapture(
             rtsp_url=source_manager.url,
             camera_name=source_manager.name,
-            frame_skip=settings.frame_skip,
             reconnect_delay=settings.reconnect_delay,
             max_reconnect_attempts=settings.max_reconnect_attempts,
         )
@@ -76,7 +82,32 @@ class ANPRPipeline:
             min_confidence=settings.plate_confidence_min,
             duplicate_window=settings.duplicate_window_seconds,
         )
+        self._tracker = VehicleTracker(
+            iou_threshold=0.35,
+            max_miss_frames=30,
+        )
+        self._vehicle_detector = VehicleDetector(
+            confidence=0.30,
+            device=settings.detection_device,
+        )
+        self._best_store = BestPlateStore(
+            save_dir=settings.snapshot_dir / "best_plates",
+        )
+        # Stable label per track: once a track gets a valid read, this text
+        # is shown for every subsequent frame even if OCR gives a noisy result.
+        self._track_labels: dict[int, str] = {}
         self._running = False
+
+        # Per-session crop folder: snapshots/plate_crops/session_YYYYMMDD_HHMMSS/
+        if settings.cropped_plate:
+            session_ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+            self._crop_dir: Optional[Path] = (
+                settings.snapshot_dir / "plate_crops" / f"session_{session_ts}"
+            )
+            self._crop_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("Plate crops will be saved to: {d}", d=self._crop_dir)
+        else:
+            self._crop_dir = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -128,7 +159,6 @@ class ANPRPipeline:
         return RTSPCapture(
             rtsp_url=source_manager.url,
             camera_name=source_manager.name,
-            frame_skip=settings.frame_skip,
             reconnect_delay=settings.reconnect_delay,
             max_reconnect_attempts=settings.max_reconnect_attempts,
         )
@@ -156,41 +186,144 @@ class ANPRPipeline:
         events: List[PipelineEvent] = []
         detections: List[DetectionResult] = self._detector.detect(frame_result.frame)
 
-        # Run OCR on every detection first so we can overlay text on the stream
+        # ── Save raw plate crops for testing / debugging ───────────────────────
+        if self._crop_dir is not None and detections:
+            self._save_plate_crops(detections, frame_result.timestamp, self._crop_dir)
+
+        # ── Tracking: assign persistent track_id per plate bbox ────────────────
+        track_ids, finalized_ids = self._tracker.update(
+            [d.bbox for d in detections]
+        )
+        for i, det in enumerate(detections):
+            det.track_id = track_ids[i]
+
+        if finalized_ids:
+            logger.debug("Tracks finalized this frame: {ids}", ids=finalized_ids)
+
+        # ── Vehicle type: associate each plate with car/truck/bus/motorcycle ───
+        vtype_map = self._vehicle_detector.get_vehicle_type(
+            frame_result.frame,
+            [d.bbox for d in detections],
+        )
+        for i, det in enumerate(detections):
+            det.vehicle_type = vtype_map.get(i, "unknown")
+
+        # ── Score crops + update best-plate store ─────────────────────────────
+        for i, detection in enumerate(detections):
+            q = score_crop(detection.plate_crop, detection.confidence, detection.bbox)
+            self._best_store.update(
+                track_id=detection.track_id,
+                crop=detection.plate_crop,
+                score=q,
+                conf=detection.confidence,
+                vehicle_type=detection.vehicle_type,
+                bbox=detection.bbox,
+                timestamp=frame_result.timestamp,
+            )
+            logger.debug(
+                "Quality score={q:.3f} track={tid} type={vtype}",
+                q=q,
+                tid=detection.track_id,
+                vtype=detection.vehicle_type,
+            )
+
+        # ── Release memory for tracks that left the frame ──────────────────────
+        for tid in finalized_ids:
+            entry = self._best_store.pop(tid)
+            if entry:
+                logger.debug(
+                    "Track {tid} finalized — best score was {s:.3f} ({vtype})",
+                    tid=tid,
+                    s=entry.best_score,
+                    vtype=entry.vehicle_type,
+                )
+            self._track_labels.pop(tid, None)
+
+        # ── OCR + Validate: run both before drawing on stream ─────────────────
         ocr_map: dict[int, Optional[OCRResult]] = {}
+        validation_map: dict[int, Optional[ValidationResult]] = {}
+
         for i, detection in enumerate(detections):
             ocr_result: Optional[OCRResult] = self._ocr.extract(detection.plate_crop)
             ocr_map[i] = ocr_result
+
             if ocr_result:
+                validation = self._validator.validate(
+                    raw_text=ocr_result.text,
+                    confidence=detection.confidence,
+                )
+                validation_map[i] = validation
                 logger.debug(
-                    "OCR raw={raw!r} conf={conf:.2f} yolo={yconf:.2f}",
-                    raw=ocr_result.text, conf=ocr_result.confidence,
-                    yconf=detection.confidence,
+                    "OCR raw={raw!r} → {plate!r} valid={v} | "
+                    "ocr={oc:.2f} yolo={yc:.2f} track={tid}",
+                    raw=ocr_result.text,
+                    plate=validation.plate_number,
+                    v=validation.is_valid,
+                    oc=ocr_result.confidence,
+                    yc=detection.confidence,
+                    tid=detection.track_id,
                 )
             else:
-                logger.debug("OCR returned None for detection conf={c:.2f}", c=detection.confidence)
+                validation_map[i] = None
+                logger.debug(
+                    "OCR returned None | conf={c:.2f} track={tid}",
+                    c=detection.confidence,
+                    tid=detection.track_id,
+                )
 
-        # Push annotated frame (bounding boxes + OCR text) to live stream
-        self._push_to_stream(frame_result.frame, detections, ocr_map)
+        # ── Lock in any newly validated plate text per track ──────────────────
+        for i, det in enumerate(detections):
+            val = validation_map.get(i)
+            if val is not None and val.is_valid:
+                self._track_labels[det.track_id] = val.plate_number
 
+        # ── Push annotated frame — stable label wins over per-frame OCR ───────
+        self._push_to_stream(
+            frame_result.frame,
+            detections,
+            ocr_map,
+            validation_map=validation_map,
+            track_labels=self._track_labels,
+            active_tracks=self._tracker.active_count,
+        )
+
+        # ── Broadcast currently active confirmed plates to frontend ────────────
+        # This fires on every frame so the right panel always reflects what is
+        # currently on screen, regardless of the duplicate-suppression window.
+        if self._track_labels:
+            active_payload = {
+                "type": "tracks_update",
+                "tracks": [
+                    {
+                        "track_id": tid,
+                        "plate":    plate,
+                        "camera":   frame_result.camera_name,
+                        "timestamp": frame_result.timestamp,
+                    }
+                    for tid, plate in self._track_labels.items()
+                ],
+            }
+            asyncio.ensure_future(self._safe_broadcast(active_payload))
+
+        # ── Emit events for valid, non-duplicate detections ───────────────────
         for i, detection in enumerate(detections):
             ocr_result = ocr_map[i]
             if ocr_result is None:
                 continue
 
-            validation: ValidationResult = self._validator.validate(
-                raw_text=ocr_result.text,
-                confidence=detection.confidence,
-            )
-            if not validation.is_valid:
-                logger.info(
-                    "Plate rejected: raw={raw!r} → {plate!r} | yolo={yc:.2f} | ocr={oc:.2f} | pattern={p}",
-                    raw=ocr_result.text,
-                    plate=validation.plate_number,
-                    yc=detection.confidence,
-                    oc=ocr_result.confidence,
-                    p=validation.pattern_type,
-                )
+            validation = validation_map[i]
+            if validation is None or not validation.is_valid:
+                if validation is not None:
+                    logger.info(
+                        "Plate rejected: raw={raw!r} → {plate!r} | yolo={yc:.2f} | "
+                        "ocr={oc:.2f} | pattern={p} | track={tid}",
+                        raw=ocr_result.text,
+                        plate=validation.plate_number,
+                        yc=detection.confidence,
+                        oc=ocr_result.confidence,
+                        p=validation.pattern_type,
+                        tid=detection.track_id,
+                    )
                 continue
 
             if self._validator.is_duplicate(validation.plate_number):
@@ -203,6 +336,12 @@ class ANPRPipeline:
                 timestamp=frame_result.timestamp,
             )
 
+            # Save the best-quality crop seen for this track so far
+            best_plate_path = self._best_store.save_best_crop(
+                track_id=detection.track_id,
+                plate_number=validation.plate_number,
+            )
+
             events.append(
                 PipelineEvent(
                     plate_number=validation.plate_number,
@@ -213,17 +352,31 @@ class ANPRPipeline:
                     image_path=image_path,
                     bbox=detection.bbox,
                     raw_text=ocr_result.raw_text,
+                    track_id=detection.track_id,
+                    vehicle_type=detection.vehicle_type,
+                    best_plate_path=best_plate_path,
                 )
             )
             logger.info(
-                "Plate detected: {plate} | conf={conf:.2f} | ocr={ocr:.2f} | cam={cam}",
+                "Plate detected: {plate} | track={tid} | type={vtype} | "
+                "conf={conf:.2f} | ocr={ocr:.2f} | cam={cam}",
                 plate=validation.plate_number,
+                tid=detection.track_id,
+                vtype=detection.vehicle_type,
                 conf=detection.confidence,
                 ocr=ocr_result.confidence,
                 cam=frame_result.camera_name,
             )
 
         return events
+
+    async def _safe_broadcast(self, payload: dict) -> None:
+        """Fire-and-forget broadcast — never raises."""
+        if self.broadcast_callback:
+            try:
+                await self.broadcast_callback(payload)
+            except Exception:
+                pass
 
     async def _persist_and_broadcast(self, event: PipelineEvent) -> None:
         async with AsyncSessionLocal() as db:
@@ -239,6 +392,9 @@ class ANPRPipeline:
                     image_path=event.image_path,
                     raw_plate_text=event.raw_text,
                     camera_id=camera.id if camera else None,
+                    track_id=event.track_id or None,
+                    vehicle_type=event.vehicle_type if event.vehicle_type != "unknown" else None,
+                    best_plate_path=event.best_plate_path,
                 )
                 await db.commit()
                 logger.debug("Event saved: id={id}", id=db_event.id)
@@ -256,6 +412,9 @@ class ANPRPipeline:
                 "camera": event.camera_name,
                 "image_path": event.image_path,
                 "bbox": event.bbox,
+                "track_id": event.track_id,
+                "vehicle_type": event.vehicle_type,
+                "best_plate_path": event.best_plate_path,
             }
             try:
                 await self.broadcast_callback(payload)
@@ -264,41 +423,89 @@ class ANPRPipeline:
 
     # ── Live stream helper ─────────────────────────────────────────────────────
 
+    # BGR colours keyed by vehicle type
+    _VEHICLE_COLORS = {
+        "car":        (0, 230, 118),   # green
+        "truck":      (0, 120, 255),   # blue
+        "bus":        (0, 165, 255),   # orange
+        "motorcycle": (255, 0, 200),   # magenta
+        "unknown":    (0, 200, 255),   # yellow
+    }
+
     @staticmethod
     def _push_to_stream(
         frame: np.ndarray,
         detections: List[DetectionResult],
         ocr_map: dict | None = None,
+        validation_map: dict | None = None,
+        track_labels: dict | None = None,
+        active_tracks: int = 0,
     ) -> None:
-        """Annotate frame with detection boxes + OCR text and push to the buffer."""
+        """Annotate frame with stable plate text, track ID, vehicle type."""
         try:
             annotated = frame.copy()
+
             for i, det in enumerate(detections):
                 x1, y1, x2, y2 = det.bbox
                 ocr = (ocr_map or {}).get(i)
+                val = (validation_map or {}).get(i)
+                cached = (track_labels or {}).get(det.track_id)
 
-                # Box colour: green if OCR found text, yellow if not
-                color = (0, 230, 118) if ocr else (0, 200, 255)
+                if cached:
+                    # Locked-in text from a previous good read — never flickers
+                    display_text = cached
+                    color = (0, 230, 118)   # green: confirmed
+                elif val is not None and val.is_valid:
+                    # First valid read this frame
+                    display_text = val.plate_number
+                    color = (0, 230, 118)   # green: confirmed
+                elif ocr is not None:
+                    # OCR read something but validation rejected it
+                    display_text = ocr.text
+                    color = (0, 200, 255)   # yellow: unconfirmed
+                else:
+                    # No OCR result at all
+                    display_text = "?"
+                    color = (160, 160, 160) # grey: no read
+
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
 
-                # Top label: OCR text + YOLO conf
-                ocr_text = ocr.text if ocr else "?"
-                label = f"{ocr_text}  {det.confidence:.0%}"
+                vtype = det.vehicle_type if det.vehicle_type != "unknown" else ""
+                label = f"[{det.track_id}]{(' ' + vtype) if vtype else ''}  {display_text}  {det.confidence:.0%}"
 
-                # Dark background behind text for readability
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.60, 2)
                 ty = max(y1 - 10, th + 4)
-                cv2.rectangle(annotated, (x1, ty - th - 4), (x1 + tw + 4, ty + 2), (0, 0, 0), -1)
+                cv2.rectangle(
+                    annotated, (x1, ty - th - 4), (x1 + tw + 4, ty + 2), (0, 0, 0), -1
+                )
                 cv2.putText(
                     annotated, label, (x1 + 2, ty),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.60, color, 2,
                 )
+
+            overlay = f"Active Tracks: {active_tracks}"
+            cv2.putText(
+                annotated, overlay, (10, annotated.shape[0] - 12),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2,
+            )
 
             ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok:
                 frame_buffer.update(buf.tobytes())
         except Exception:
             pass  # never crash the pipeline over a stream update
+
+    # ── Plate crop saver (testing / debugging) ────────────────────────────────
+
+    @staticmethod
+    def _save_plate_crops(detections: List[DetectionResult], timestamp: float, crop_dir: Path) -> None:
+        ts = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        for det in detections:
+            try:
+                fname = f"{ts}_t{det.track_id}_c{det.confidence:.2f}.jpg"
+                cv2.imwrite(str(crop_dir / fname), det.plate_crop)
+            except Exception:
+                pass
 
     # ── Snapshot helper ────────────────────────────────────────────────────────
 

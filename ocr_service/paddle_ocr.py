@@ -37,6 +37,10 @@ class PaddleOCRService:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
+    # Minimum crop dimensions PaddleOCR can handle without segfaulting
+    _MIN_W = 20
+    _MIN_H = 10
+
     def extract(self, plate_image: np.ndarray) -> Optional[OCRResult]:
         """
         Run OCR on a cropped plate image.
@@ -48,8 +52,19 @@ class PaddleOCRService:
         if self._ocr is None:
             return None
 
+        # Guard: reject crops that are too small — PaddleOCR segfaults on tiny inputs
+        if plate_image is None or plate_image.size == 0:
+            return None
+        h, w = plate_image.shape[:2]
+        if w < self._MIN_W or h < self._MIN_H:
+            logger.debug("Crop too small ({w}x{h}), skipping OCR", w=w, h=h)
+            return None
+
+        # Ensure C-contiguous memory layout — misaligned arrays can crash Paddle
+        img = np.ascontiguousarray(plate_image)
+
         try:
-            result = self._ocr.ocr(plate_image, cls=True)
+            result = self._ocr.ocr(img, cls=True)
         except Exception as exc:
             logger.error("PaddleOCR inference error: {err}", err=exc)
             return None
@@ -96,6 +111,8 @@ class PaddleOCRService:
                 lang=self.lang,
                 use_gpu=False,
                 show_log=False,
+                enable_mkldnn=False,  # MKL threading causes SIGSEGV on Linux
+                cpu_threads=1,        # single-threaded avoids race conditions
             )
             logger.info("PaddleOCR initialised (lang={lang}).", lang=self.lang)
         except ImportError:

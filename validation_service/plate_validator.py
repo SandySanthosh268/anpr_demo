@@ -48,9 +48,13 @@ _OCR_CORRECTIONS: Dict[str, str] = {
     "G": "6",
     "T": "7",
 }
-_DIGIT_CORRECTIONS: Dict[str, str] = {
-    "0": "O",
-    "1": "I",
+# For letter positions: digits that look like letters
+_DIGIT_TO_LETTER: Dict[str, list] = {
+    "0": ["O", "D", "Q"],   # D is very common in Indian series (TN07DD2233)
+    "1": ["I", "L"],
+    "8": ["B"],
+    "6": ["G"],
+    "5": ["S"],
 }
 
 
@@ -136,54 +140,83 @@ class PlateValidator:
         return re.sub(r"[^A-Z0-9]", "", text.upper())
 
     def _correct_and_match(self, text: str) -> Tuple[str, str]:
-        # Try each pattern with correction heuristics
-        for attempt in self._correction_candidates(text):
-            if _STANDARD.match(attempt):
-                return attempt, "standard"
-            if _BH_SERIES.match(attempt):
-                return attempt, "bh_series"
-            if _TEMPORARY.match(attempt):
-                return attempt, "temporary"
+        # Try the text as-is, then with 1 or 2 leading characters stripped.
+        # This handles OCR noise at the start (e.g. logo/emblem read as 'P').
+        for strip in (0, 1, 2):
+            candidate_text = text[strip:] if strip else text
+            for attempt in self._correction_candidates(candidate_text):
+                if _STANDARD.match(attempt):
+                    return attempt, "standard"
+                if _BH_SERIES.match(attempt):
+                    return attempt, "bh_series"
+                if _TEMPORARY.match(attempt):
+                    return attempt, "temporary"
         return text, "unknown"
 
     @staticmethod
     def _correction_candidates(text: str) -> list[str]:
         """
-        Generate corrected variants of the text.
+        Generate corrected variants for a standard Indian plate SS DD LL NNNN.
 
-        Strategy: for a standard plate (2 alpha + 2 digit + 1-3 alpha + 4 digit),
-        positions 0-1 are letters, 2-3 are digits, 4-6 are letters, 7-10 are digits.
-        We apply digit↔letter substitutions at the expected positions.
+        Positional rules (10-char plate):
+          0,1   → letters (state code)
+          2,3   → digits  (RTO number)
+          4-6   → letters (series)  ← '0' commonly means 'D' or 'O' here
+          6-9   → digits  (number)
+
+        Applies multi-position corrections so that e.g. '00' → 'DD' is found
+        in a single candidate rather than needing two separate passes.
         """
+        import itertools
+
         candidates = [text]
         if len(text) < 8:
             return candidates
 
-        # Apply positional corrections for a 10-char plate: SS DD LL NNNN
         chars = list(text)
-        # Positions 2,3 must be digits
-        for i in (2, 3):
-            if i < len(chars) and chars[i] in _DIGIT_CORRECTIONS:
-                # keep original but also try digit→letter at letter positions
-                pass
-            if i < len(chars) and chars[i] in _OCR_CORRECTIONS:
-                corrected = chars[:]
-                corrected[i] = _OCR_CORRECTIONS[chars[i]]
-                candidates.append("".join(corrected))
 
-        # Positions 0,1 must be letters
+        # Build per-position option lists for the series letter block (positions 4-6).
+        # Each position yields a list of possible characters.
+        series_positions = list(range(4, min(7, len(chars))))
+        series_options: list[list[str]] = []
+        for i in series_positions:
+            ch = chars[i]
+            opts = _DIGIT_TO_LETTER.get(ch, [ch])  # possible letter replacements
+            series_options.append([ch] + [l for l in opts if l != ch])
+
+        # Cartesian product of all series-position options → multi-char corrections
+        for combo in itertools.product(*series_options):
+            c = chars[:]
+            for i, ch in zip(series_positions, combo):
+                c[i] = ch
+            candidate = "".join(c)
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        # Positions 0,1: state-code letters — fix digits that look like letters
         for i in (0, 1):
-            if i < len(chars) and chars[i] in _DIGIT_CORRECTIONS:
-                corrected = chars[:]
-                corrected[i] = _DIGIT_CORRECTIONS[chars[i]]
-                candidates.append("".join(corrected))
+            if i < len(chars) and chars[i] in _DIGIT_TO_LETTER:
+                for letter in _DIGIT_TO_LETTER[chars[i]]:
+                    c = chars[:]
+                    c[i] = letter
+                    if "".join(c) not in candidates:
+                        candidates.append("".join(c))
 
-        # Last 4 characters must be digits
+        # Positions 2,3: RTO digit positions — fix letters that look like digits
+        for i in (2, 3):
+            if i < len(chars) and chars[i] in _OCR_CORRECTIONS:
+                c = chars[:]
+                c[i] = _OCR_CORRECTIONS[chars[i]]
+                if "".join(c) not in candidates:
+                    candidates.append("".join(c))
+
+        # Last 4 positions: number digits — fix letters that look like digits
         for i in range(max(0, len(chars) - 4), len(chars)):
             if chars[i] in _OCR_CORRECTIONS:
-                corrected = chars[:]
-                corrected[i] = _OCR_CORRECTIONS[chars[i]]
-                candidates.append("".join(corrected))
+                c = chars[:]
+                c[i] = _OCR_CORRECTIONS[chars[i]]
+                if "".join(c) not in candidates:
+                    candidates.append("".join(c))
 
         return candidates
 

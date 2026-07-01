@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     # ── Snapshots ──────────────────────────────────────────────
     snapshot_dir: Path = Path("snapshots")
     snapshot_retention_days: int = Field(default=30, ge=1)
+    cropped_plate: bool = False  # true → save every detected plate crop to snapshots/plate_crops/
 
     # ── API ────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
